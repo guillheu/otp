@@ -392,6 +392,8 @@ pub fn simple_one_for_one_test() {
   let assert Ok(#("0", "toto", p3)) = process.receive(subject, 10)
   let assert Error(Nil) = process.receive(subject, 10)
 
+  panic as "Simple supervisors apparently cannot restart their children if they have startup arguments : http://erlang.org/doc/man/supervisor.html#id243029, https://stackoverflow.com/a/41190867"
+
   todo as "uncomment the following and figure out whats going on"
 
   // // Shutdown first child and assert only it restarts

@@ -83,12 +83,12 @@ pub opaque type Builder {
   )
 }
 
-pub opaque type SimpleBuilder {
+pub opaque type SimpleBuilder(arg) {
   SimpleBuilder(
     intensity: Int,
     period: Int,
     auto_shutdown: AutoShutdown,
-    child: ChildBuilder,
+    child: SimpleChildBuilder(arg),
   )
 }
 
@@ -106,7 +106,7 @@ pub fn new(strategy strategy: Strategy) -> Builder {
   )
 }
 
-pub fn simple_new(child: ChildBuilder) -> SimpleBuilder {
+pub fn simple_new(child: SimpleChildBuilder(arg)) -> SimpleBuilder(arg) {
   SimpleBuilder(
     intensity: default_restart_intensity,
     period: default_restart_period,
@@ -144,10 +144,10 @@ pub fn restart_tolerance(
 ///
 /// Intensity defaults to 2 and period defaults to 5.
 pub fn simple_restart_tolerance(
-  builder: SimpleBuilder,
+  builder: SimpleBuilder(arg),
   intensity intensity: Int,
   period period: Int,
-) -> SimpleBuilder {
+) -> SimpleBuilder(arg) {
   SimpleBuilder(..builder, intensity: intensity, period: period)
 }
 
@@ -160,9 +160,9 @@ pub fn auto_shutdown(builder: Builder, value: AutoShutdown) -> Builder {
 /// A supervisor can be configured to automatically shut itself down with
 /// exit reason shutdown when significant children terminate.
 pub fn simple_auto_shutdown(
-  builder: SimpleBuilder,
+  builder: SimpleBuilder(arg),
   value: AutoShutdown,
-) -> SimpleBuilder {
+) -> SimpleBuilder(arg) {
   SimpleBuilder(..builder, auto_shutdown: value)
 }
 
@@ -223,6 +223,38 @@ pub opaque type ChildBuilder {
   )
 }
 
+pub opaque type SimpleChildBuilder(startup_arg) {
+  SimpleChildBuilder(
+    /// id is used to identify the child specification internally by the
+    /// supervisor.
+    ///
+    /// Notice that this identifier on occations has been called "name". As far
+    /// as possible, the terms "identifier" or "id" are now used but to keep
+    /// backward compatibility, some occurences of "name" can still be found, for
+    /// example in error messages.
+    id: String,
+    /// A function to call to start the child process.
+    /// Unlike the regular ChildBuilder, a SimpleChildBuilder function can accept
+    /// arguments, passed via `simple_start_child`
+    starter: fn(startup_arg) -> Result(Pid, Dynamic),
+    /// When the child is to be restarted. See the `Restart` documentation for
+    /// more.
+    ///
+    /// You most likely want the `Permanent` variant.
+    restart: Restart,
+    /// This defines if a child is considered significant for automatic
+    /// self-shutdown of the supervisor.
+    ///
+    /// You most likely do not want to consider any children significant.
+    ///
+    /// This will be ignored if the supervisor auto shutdown is set to `Never`,
+    /// which is the default.
+    significant: Bool,
+    /// Whether the child is a supervisor or not.
+    child_type: ChildType,
+  )
+}
+
 pub type LinkStartError {
   ErlangError(Dynamic)
   SimpleOneForOneMultipleChildrenError
@@ -247,7 +279,7 @@ pub fn start_link(builder: Builder) -> Result(Supervisor, LinkStartError) {
 }
 
 pub fn simple_start_link(
-  builder: SimpleBuilder,
+  builder: SimpleBuilder(arg),
 ) -> Result(SimpleSupervisor, LinkStartError) {
   let flags =
     dict.new()
@@ -256,7 +288,7 @@ pub fn simple_start_link(
     |> property("period", builder.period)
     |> property("auto_shutdown", builder.auto_shutdown)
 
-  let children = [child_builder_to_erlang(builder.child)]
+  let children = [simple_child_builder_to_erlang(builder.child)]
 
   use supervisor_pid <- result.map(
     erlang_start_link(#(flags, children))
@@ -285,7 +317,7 @@ pub fn start_child(
 
 pub fn simple_start_child(
   supervisor: SimpleSupervisor,
-  args: List(Dynamic),
+  args: List(any),
 ) -> Result(Pid, SupervisorError) {
   erlang_start_child(supervisor.pid, args |> dynamic.from)
 }
@@ -432,6 +464,50 @@ pub fn supervisor_child(
   )
 }
 
+/// A regular child that is not also a supervisor.
+///
+/// id is used to identify the child specification internally by the
+/// supervisor.
+/// Notice that this identifier on occations has been called "name". As far
+/// as possible, the terms "identifier" or "id" are now used but to keep
+/// backward compatibility, some occurences of "name" can still be found, for
+/// example in error messages.
+///
+pub fn simple_worker_child(
+  id id: String,
+  run starter: fn(arg) -> Result(Pid, whatever),
+) -> SimpleChildBuilder(arg) {
+  SimpleChildBuilder(
+    id: id,
+    starter: fn(arg) { starter(arg) |> result.map_error(dynamic.from) },
+    restart: Permanent,
+    significant: False,
+    child_type: WorkerChild(5000),
+  )
+}
+
+/// A special child that is a supervisor itself.
+///
+/// id is used to identify the child specification internally by the
+/// supervisor.
+/// Notice that this identifier on occations has been called "name". As far
+/// as possible, the terms "identifier" or "id" are now used but to keep
+/// backward compatibility, some occurences of "name" can still be found, for
+/// example in error messages.
+///
+pub fn simple_supervisor_child(
+  id id: String,
+  run starter: fn(arg) -> Result(Pid, whatever),
+) -> SimpleChildBuilder(arg) {
+  SimpleChildBuilder(
+    id: id,
+    starter: fn(arg) { starter(arg) |> result.map_error(dynamic.from) },
+    restart: Permanent,
+    significant: False,
+    child_type: SupervisorChild,
+  )
+}
+
 /// This defines if a child is considered significant for automatic
 /// self-shutdown of the supervisor.
 ///
@@ -472,6 +548,43 @@ fn child_builder_to_erlang(child: ChildBuilder) -> Dict(Atom, Dynamic) {
     atom.create_from_string("erlang"),
     atom.create_from_string("apply"),
     [dynamic.from(child.starter), dynamic.from([])],
+  )
+
+  let #(type_, shutdown) = case child.child_type {
+    SupervisorChild -> #(
+      atom.create_from_string("supervisor"),
+      dynamic.from(atom.create_from_string("infinity")),
+    )
+    WorkerChild(timeout) -> #(
+      atom.create_from_string("worker"),
+      dynamic.from(timeout),
+    )
+  }
+
+  dict.new()
+  |> property("id", child.id)
+  |> property("start", mfa)
+  |> property("restart", child.restart)
+  |> property("significant", child.significant)
+  |> property("type", type_)
+  |> property("shutdown", shutdown)
+}
+
+@internal
+pub fn simple_child_apply(
+  starter: fn(startup_arg) -> Result(Pid, Dynamic),
+  startup_arg: startup_arg,
+) -> Result(Pid, Dynamic) {
+  starter(startup_arg)
+}
+
+fn simple_child_builder_to_erlang(
+  child: SimpleChildBuilder(arg),
+) -> Dict(Atom, Dynamic) {
+  let mfa = #(
+    atom.create_from_string("gleam@otp@erlang_supervisor"),
+    atom.create_from_string("simple_child_apply"),
+    [child.starter],
   )
 
   let #(type_, shutdown) = case child.child_type {

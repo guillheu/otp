@@ -1,5 +1,6 @@
 import gleam/dynamic.{type Dynamic}
 import gleam/erlang/process.{type Pid, type Subject}
+import gleam/io
 import gleam/otp/actor
 import gleam/otp/erlang_supervisor as sup
 
@@ -31,6 +32,28 @@ fn init_notifier_child(
     },
     loop: fn(_msg, state) { actor.continue(state) },
   )
+}
+
+// A child for simple supervisor that sends their name back to the test process during
+// initialisation so that we can tell they (re)started
+fn simple_init_notifier_child(
+  subject: Subject(#(String, String, Pid)),
+  name: String,
+) -> sup.SimpleChildBuilder(String) {
+  sup.simple_worker_child(id: name, run: fn(startup_message: String) {
+    process.send(subject, #(name, startup_message, process.self()))
+    Ok(process.self())
+  })
+  // simple_actor_child(
+  //   name: name,
+  //   init: fn(startup_message) {
+  //     fn() {
+  //       process.send(subject, #(name, startup_message, process.self()))
+  //       actor.Ready(name, process.new_selector())
+  //     }
+  //   },
+  //   loop: fn(_msg, state) { actor.continue(state) },
+  // )
 }
 
 pub fn one_for_one_test() {
@@ -338,8 +361,9 @@ pub fn simple_one_for_one_test() {
   let subject = process.new_subject()
 
   let assert Ok(supervisor) =
-    init_notifier_child(subject, "0")
+    simple_init_notifier_child(subject, "0")
     |> sup.simple_new
+    // |> sup.simple_restart_tolerance(40, 5)
     |> sup.simple_start_link
 
   // Assert no child has yet started
@@ -351,43 +375,46 @@ pub fn simple_one_for_one_test() {
     == [sup.Specs(1), sup.Active(0), sup.Supervisors(0), sup.Workers(0)]
 
   // Start one child
-  let assert Ok(_p1) = sup.simple_start_child(supervisor, [])
+  let assert Ok(_p1) = sup.simple_start_child(supervisor, ["foo"])
 
   // Assert child was started
 
-  let assert Ok(#("0", p1)) = process.receive(subject, 10)
+  let assert Ok(#("0", "foo", p1)) = process.receive(subject, 10)
   let assert Error(Nil) = process.receive(subject, 10)
 
   // Start other children
-  let assert Ok(_p2) = sup.simple_start_child(supervisor, [])
-  let assert Ok(_p3) = sup.simple_start_child(supervisor, [])
+  let assert Ok(_p2) = sup.simple_start_child(supervisor, ["bar"])
+  let assert Ok(_p3) = sup.simple_start_child(supervisor, ["toto"])
 
   // Assert other children were started
 
-  let assert Ok(#("0", p2)) = process.receive(subject, 10)
-  let assert Ok(#("0", p3)) = process.receive(subject, 10)
+  let assert Ok(#("0", "bar", p2)) = process.receive(subject, 10)
+  let assert Ok(#("0", "toto", p3)) = process.receive(subject, 10)
   let assert Error(Nil) = process.receive(subject, 10)
 
-  // Shutdown first child and assert only it restarts
-  process.kill(p1)
-  let assert Ok(#("0", p1)) = process.receive(subject, 10)
-  let assert Error(Nil) = process.receive(subject, 10)
-  let assert True = process.is_alive(p1)
-  let assert True = process.is_alive(p2)
-  let assert True = process.is_alive(p3)
+  todo as "uncomment the following and figure out whats going on"
 
-  // Shutdown second child and assert only it restarts
-  process.kill(p2)
-  let assert Ok(#("0", p2)) = process.receive(subject, 10)
-  let assert Error(Nil) = process.receive(subject, 10)
-  let assert True = process.is_alive(p1)
-  let assert True = process.is_alive(p2)
-  let assert True = process.is_alive(p3)
+  // // Shutdown first child and assert only it restarts
+  // process.kill(p1)
+  // io.debug("toto")
+  // let assert Ok(#("0", "foo", p1)) = process.receive(subject, 10)
+  // let assert Error(Nil) = process.receive(subject, 10)
+  // let assert True = process.is_alive(p1)
+  // let assert True = process.is_alive(p2)
+  // let assert True = process.is_alive(p3)
 
-  // Terminate third child and assert it is not restarting
-  let assert Ok(_) = sup.simple_terminate_child(supervisor, p3)
-  let assert Error(Nil) = process.receive(subject, 100)
-  let assert False = process.is_alive(p3)
+  // // Shutdown second child and assert only it restarts
+  // process.kill(p2)
+  // let assert Ok(#("0", "bar", p2)) = process.receive(subject, 10)
+  // let assert Error(Nil) = process.receive(subject, 10)
+  // let assert True = process.is_alive(p1)
+  // let assert True = process.is_alive(p2)
+  // let assert True = process.is_alive(p3)
+
+  // // Terminate third child and assert it is not restarting
+  // let assert Ok(_) = sup.simple_terminate_child(supervisor, p3)
+  // let assert Error(Nil) = process.receive(subject, 100)
+  // let assert False = process.is_alive(p3)
 
   let supervisor_pid = sup.simple_get_pid(supervisor)
   let assert True = process.is_alive(supervisor_pid)

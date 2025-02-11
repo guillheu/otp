@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.16.1 - 2025-01-20
+
+- Fixed a bug where the static supervisor would return the incorrect value if
+  it crashes when initialising.
+
+## v0.16.0 - 2024-12-10
+
+- Fixed a bug where if an actor times out when starting it would not unlink from
+  the parent.
+
+## v0.15.0 - 2024-12-08
+
+- The deprecated `try_await_forever` function in the `gleam/otp/task` module has
+  been removed.
+
 ## v0.14.1 - 2024-11-15
 
 - Fixed a bug where the `significant` parameter would not be passed to the
